@@ -1,0 +1,7 @@
+# Ignore local Google Cloud service account key
+# Keep this file out of git history and GitHub
+
+eattheapple-39cdafad175d.json
+
+# Ignore local environment file
+.env
