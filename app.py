@@ -13,7 +13,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
-
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -34,20 +33,23 @@ online_users = {}
 
 # Publish message to pub/sub
 def publish_message(username, text):
-    data = json.dumps({'username': username, 'text': text}).encode('utf-8')
-    publisher.publish(topic_path,data)
+    data = json.dumps({'username': username, 'message': text}).encode('utf-8')
+    publisher.publish(topic_path, data)
     print(f"Published to Pub/Sub: {username}: {text}")
 
 # Listen to Pub/Sub and broadcast to all WebSocket users
 def listen_for_messages():
     def callback(message):
         data = json.loads(message.data.decode('utf-8'))
+        print(f"Pub/Sub payload: {data}")
+        text_value = data.get('message') or data.get('text') or ''
+        print(f"Normalized text value: {repr(text_value)}")
         socketio.emit('message', {
-            'username': data['username'],
-            'text': data['text']
+            'username': data.get('username'),
+            'text': text_value
         })
         message.ack()
-        log_message_to_bigquery(data['username'], data['text'])
+        log_message_to_bigquery(data.get('username'), text_value)
     subscriber.subscribe(subscription_path, callback=callback)
     print("Listening to Pub/Sub")
 
@@ -62,16 +64,20 @@ TABLE_ID = 'eattheapple.chat_analytics.messages'
 
 def log_message_to_bigquery(username, text):
     timestamp = datetime.utcnow().isoformat()
-    word_count = len(text.split())
+    word_count = len(text.split()) if text else 0
     rows_to_insert = [{
         'username': username,
         'message': text,
         'word_count': word_count,
         'timestamp': timestamp
     }]
+    print(f"Inserting row to BigQuery: {rows_to_insert}")
     errors = bq_client.insert_rows_json(TABLE_ID, rows_to_insert)
     if errors:
         print(f"Error inserting into BigQuery: {errors}")
+        print(f"Row payload: {rows_to_insert}")
+        if any('text' in row for row in rows_to_insert):
+            print("DEBUG: Found 'text' field in row payload")
     else:
         print(f"Logged message to BigQuery: {username}: {text}")
 
