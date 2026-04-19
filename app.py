@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from google.cloud import pubsub_v1
@@ -6,6 +6,9 @@ from google.cloud import pubsub_v1
 import os
 import json
 import threading
+
+from google.cloud import bigquery
+from datetime import datetime
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -44,6 +47,7 @@ def listen_for_messages():
             'text': data['text']
         })
         message.ack()
+        log_message_to_bigquery(data['username'], data['text'])
     subscriber.subscribe(subscription_path, callback=callback)
     print("Listening to Pub/Sub")
 
@@ -52,6 +56,26 @@ thread = threading.Thread(target=listen_for_messages)
 thread.daemon = True
 thread.start()
 
+# BigQuery setup
+bq_client = bigquery.Client()
+TABLE_ID = 'eattheapple.chat_analytics.messages'
+
+def log_message_to_bigquery(username, text):
+    timestamp = datetime.utcnow().isoformat()
+    word_count = len(text.split())
+    rows_to_insert = [{
+        'username': username,
+        'message': text,
+        'word_count': word_count,
+        'timestamp': timestamp
+    }]
+    errors = bq_client.insert_rows_json(TABLE_ID, rows_to_insert)
+    if errors:
+        print(f"Error inserting into BigQuery: {errors}")
+    else:
+        print(f"Logged message to BigQuery: {username}: {text}")
+
+# Flask routes and SocketIO events
 @app.route('/')
 def home():
     return {"message": "Chatroom backend is running"}
@@ -76,10 +100,30 @@ def handle_join(data):
 
 @socketio.on('message')
 def handle_message(data):
-    emit('message', {
-        'username': data['username'],
-        'text': data['text']
-    }, broadcast=True)
+    publish_message(data['username'], data['text'])
+
+# Stats
+@app.route('/stats')
+def get_stats():
+    query = """
+        SELECT
+            username,
+            COUNT(*) as message_count,
+            AVG(COALESCE(word_count, ARRAY_LENGTH(SPLIT(message, ' ')))) as avg_words
+        FROM `eattheapple.chat_analytics.messages`
+        GROUP BY username
+        ORDER BY message_count DESC
+    """
+    results = bq_client.query(query).result()
+    stats = []
+    
+    for row in results:
+        stats.append({
+            'username': row.username,
+            'message_count': row.message_count,
+            'avg_words': row.avg_words
+        })
+    return jsonify(stats)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
